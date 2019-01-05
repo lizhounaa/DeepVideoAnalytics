@@ -7,43 +7,20 @@ Deep Video Analytics is a platform for indexing and extracting information from 
 With latest version of docker installed correctly, you can run Deep Video Analytics in minutes
 locally (even without a GPU) using a single command.
 
-#### For installation instructions & demo please visit [https://www.deepvideoanalytics.com](https://www.deepvideoanalytics.com)
+### Installation & Overview
 
-### Documentation
+For installation instructions and overview please visit
+[https://www.deepvideoanalytics.com](https://www.deepvideoanalytics.com) and go through the presentation.
 
-- For a quick overview we **strongly recommend** going through the [presentation in readme.pdf](/docs/readme.pdf)
+The standalone OCR example has been moved to [/docs/experiments/ocr](/docs/experiments/ocr) directory.
 
-### Experiments
+### Architecture
 
-- **OCR example has been moved to [/docs/experiments/ocr](/docs/experiments/ocr) directory**.
-- More experiments coming soon!
+Deep Video Analytics implements a client-server architecture pattern, where clients can access state of the server
+via a REST API. For uploading, processing data, training models, performing queries, i.e. mutating the state
+clients can send DVAPQL (Deep Video Analytics Processing and Query Language) formatted as JSON. Each query represents
+a directed acyclic graph of operations.
 
-
-### Deployment
-
-We provide instructions for developing, testing and deploying DVA.
-
-0. [deploy/compose/dev](/deploy/compose/dev) contains docker-compose files for interactively developing DVA by using  host server directory mapped as a volume.
-
-1. [deploy/compose/test](/deploy/compose/test) contains docker-compose files for testing cloud filesystem (s3, gcs) support.
-
-2. [deploy/compose/cpu](/deploy/compose/cpu) contains docker-compose files for non-GPU single machine deployments on Linode, AWS, GCP etc.
-
-3. [deploy/compose/gpu](/deploy/compose/gpu) contains docker-compose files for GPU single machine deployments on GCP, AWS etc.
-
-4. [deploy/kube](/deploy/kube) contains files used for launching DVA in a scalable GKE + GCS setup, with and without GPUs.
-
-
-### Code organization
-
-- /client : Python client using DVA REST API
-- /configs : ngnix config + defaults.py defining models + processing pipelines (can be replaced by mounting a volume)
-- /deploy : Dockerfiles + Instructions for development, single machine deployment and scalable deployment with Kubernetes
-- /docs : Documentation, tutorial and experiments
-- /tests : Files required for testing
-- /repos : Code copied from third party repos, e.g. Yahoo LOPQ, TF-CTPN etc.
-- /server : dvalib + django server contains contains bulk of the code for UI, App and models.
-- /logs : Empty dir for storing logs
 
 ### Libraries present in this repository and their licenses
 
@@ -60,24 +37,20 @@ We provide instructions for developing, testing and deploying DVA.
 | Original CRNN code by Baoguang Shi  |  [MIT License](https://github.com/bgshih/crnn) |
 | Object Detector App using TF Object detection API |  [MIT License](https://github.com/datitran/Object-Detector-App) | 
 | Plotly.js |  [MIT License](https://github.com/plotly/plotly.js/blob/master/LICENSE) | 
-| CRF as RNN  |  [MIT License](https://github.com/sadeepj/crfasrnn_keras/blob/master/LICENSE) | 
-| Text Detection CTPN  |  [MIT License](https://github.com/eragonruan/text-detection-ctpn/LICENSE) | 
+| Text Detection CTPN  |  [MIT License](https://github.com/eragonruan/text-detection-ctpn/LICENSE) |
 | SphereFace  |  [MIT License](https://github.com/wy1iu/sphereface/blob/master/license) |
 | Segment annotator  |   [BSD 3-clause](https://github.com/kyamagu/js-segment-annotator/blob/master/LICENSE) |
-| TF Object detection API  | [Apache 2.0](https://github.com/tensorflow/models/tree/master/research/object_detection) |
-| TF models/slim  | [Apache 2.0](https://github.com/tensorflow/models/tree/master/research/slim) |
-| TF models/delf  | [Apache 2.0](https://github.com/tensorflow/models/tree/master/research/delf) |
-| Youtube 8M feature extractor  | [Apache 2.0](https://github.com/google/youtube-8m) |
-| CROW   |  [Apache 2.0](https://github.com/yahoo/crow/blob/master/LICENSE)  | 
+| Youtube 8M feature extractor weights  | [Apache 2.0](https://github.com/google/youtube-8m) |
 | LOPQ   |  [Apache 2.0](https://github.com/yahoo/lopq/blob/master/LICENSE)  | 
 | Open Images Pre-trained network  |  [Apache 2.0](https://github.com/openimages/dataset/blob/master/LICENSE) |
+| Interval Tree  |  [Apache 2.0](https://github.com/chaimleib/intervaltree) |
 
 ### Libraries present in container (/root/thirdparty/)
 
 | Library  | Link to the license |
 | -------- | ------------------- |
-| pqkmeans |  [MIT License](https://github.com/DwangoMediaVillage/pqkmeans/blob/master/LICENSE) |
 | faiss | [BSD + PATENTS License](https://github.com/facebookresearch/faiss/blob/master/LICENSE) |
+| dlib | [Boost Software License](https://github.com/davisking/dlib/blob/master/dlib/LICENSE.txt) |
 
 
 
@@ -89,11 +62,11 @@ We provide instructions for developing, testing and deploying DVA.
 * Numpy
 * Pytorch
 * Docker
+* LMDB
 * Nvidia-docker
 * Docker-compose
 * All packages in [requirements.txt](/requirements.txt)
 * All dependancies installed in [CPU Dockerfile](/deploy/dockerfiles/Dockerfile) & [GPU Dockerfile](/deploy/dockerfiles/Dockerfile.gpu)
-
 
 
 # License & Copyright

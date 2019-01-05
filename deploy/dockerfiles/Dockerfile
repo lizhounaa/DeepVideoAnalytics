@@ -1,4 +1,4 @@
-FROM tensorflow/tensorflow:1.6.0
+FROM tensorflow/tensorflow:1.12.0
 MAINTAINER Akshay Bhat <akshayubhat@gmail.com>
 RUN apt-get update -q && apt-get install -y wget xz-utils
 WORKDIR "/bin/"
@@ -37,19 +37,26 @@ RUN mkdir media
 RUN apt-get install -y cmake
 RUN mkdir thirdparty
 WORKDIR "/root/thirdparty/"
-RUN git clone --recursive https://github.com/DeepVideoAnalytics/pqkmeans.git
-RUN cd pqkmeans && python setup.py install
+# install dlib
+RUN git clone --recursive https://github.com/davisking/dlib
+WORKDIR "/root/thirdparty/dlib"
+RUN git reset --hard 929c630b381d444bbf5d7aa622e3decc7785ddb2
+RUN python setup.py install --yes USE_AVX_INSTRUCTIONS
 WORKDIR "/root/thirdparty/"
-RUN git clone --recursive https://github.com/DeepVideoAnalytics/faiss
+RUN git clone --recursive https://github.com/facebookresearch/faiss
+# install faiss
 WORKDIR "/root/thirdparty/faiss"
+RUN git reset --hard cdc5a8b7b876fb636362c724f54e06fe889e3ac7
 RUN apt-get install -y libopenblas-dev swig
 ENV BLASLDFLAGS /usr/lib/libopenblas.so.0
-RUN mv example_makefiles/makefile.inc.Linux ./makefile.inc
-RUN make tests/test_blas -j $(nproc) && make -j $(nproc) && make py
+# Replace this with repo version /root/DVA/deploy/dockerfiles/faiss.patch before merging into stable
+RUN git apply /root/DVA/deploy/dockerfiles/faiss.patch
+RUN ./configure
+RUN make -j $(nproc) && make install && make py
 #RUN cd tests && ./run_tests.sh && cd ..
 ENV PYTHONPATH /root/DVA/repos/:$PYTHONPATH
 ENV PYTHONPATH /root/DVA/repos/tf_ctpn_cpu/:$PYTHONPATH
-ENV PYTHONPATH /root/thirdparty/faiss:$PYTHONPATH
+ENV PYTHONPATH /root/thirdparty/faiss/python:$PYTHONPATH
 WORKDIR "/root/DVA/server/"
 VOLUME ["/root/media","/root/DVA/configs/custom_defaults"]
 EXPOSE 80

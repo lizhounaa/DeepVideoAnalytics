@@ -472,18 +472,15 @@ $scope.search = function (approximate) {
         data: {
             'image_url': image_data,
             'count': $('#result_count').val(),
+            'nprobe': $('#nprobe').val(),
             'selected_indexers':selected_indexers,
             'selected_detectors':selected_detectors,
             'generate_tags':$scope.generate_tags,
             'csrfmiddlewaretoken':$(csrf_token).val()
         },
         success: function (response) {
-            $scope.status = "Search Completed";
-            $scope.alert_status = false;
             console.log(response);
-            $scope.results = response.results;
-            $scope.query_url = response.url;
-            $scope.regions = response.regions;
+            window.location.href = response.url;
             $scope.$$phase || $scope.$digest();
         }
     });

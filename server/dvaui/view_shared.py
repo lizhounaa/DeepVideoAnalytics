@@ -9,6 +9,11 @@ from dvaapp import fs
 from PIL import Image
 from dvaapp.processing import DVAPQLProcess
 
+if 'INIT_MODELS' in os.environ:
+    DEFAULT_PROCESSING = json.loads(base64.decodestring(os.environ['INIT_MODELS']))['processing']
+else:
+    DEFAULT_PROCESSING = {}
+
 
 def create_retriever(name, algorithm, filters, indexer_shasum, approximator_shasum, user=None):
     p = DVAPQLProcess()
@@ -36,13 +41,13 @@ def model_apply(model_pk, video_pks, filters, target, segments_batch_size, frame
     trained_model = dvaapp.models.TrainedModel.objects.get(pk=model_pk)
     if trained_model.model_type == dvaapp.models.TrainedModel.INDEXER:
         operation = 'perform_indexing'
-        args = {"indexer_pk": model_pk, 'filters': filters, 'target': target}
+        args = {"trainedmodel_selector": {"pk":model_pk}, 'filters': filters, 'target': target}
     elif trained_model.model_type == dvaapp.models.TrainedModel.DETECTOR:
         operation = 'perform_detection'
-        args = {"detector_pk": model_pk, 'filters': filters, 'target': target}
+        args = {"trainedmodel_selector": {"pk":model_pk}, 'filters': filters, 'target': target}
     elif trained_model.model_type == dvaapp.models.TrainedModel.ANALYZER:
         operation = 'perform_analysis'
-        args = {"analyzer_pk": model_pk, 'filters': filters, 'target': target}
+        args = {"trainedmodel_selector": {"pk":model_pk}, 'filters': filters, 'target': target}
     else:
         operation = ""
         args = {}
@@ -104,9 +109,9 @@ def handle_uploaded_file(f, name, user=None, rate=None):
     filename = filename.lower()
     vuid = str(uuid.uuid1()).replace('-', '_')
     extension = filename.split('.')[-1]
-    if filename.endswith('.dva_export.zip'):
-        local_fname = '{}/ingest/{}.dva_export.zip'.format(settings.MEDIA_ROOT, vuid)
-        fpath = '/ingest/{}.dva_export.zip'.format(vuid)
+    if filename.endswith('.dva_export'):
+        local_fname = '{}/ingest/{}.dva_export'.format(settings.MEDIA_ROOT, vuid)
+        fpath = '/ingest/{}.dva_export'.format(vuid)
         with open(local_fname, 'wb+') as destination:
             for chunk in f.chunks():
                 destination.write(chunk)
@@ -160,8 +165,7 @@ def handle_uploaded_file(f, name, user=None, rate=None):
                     {'arguments': {
                         'map': [
                             {
-                                'arguments': {'map': json.load(
-                                    file("../configs/custom_defaults/dataset_processing.json"))},
+                                'arguments': {'map': DEFAULT_PROCESSING['dataset']},
                                 'operation': 'perform_dataset_extraction',
                             }
                         ]
@@ -192,8 +196,7 @@ def handle_uploaded_file(f, name, user=None, rate=None):
                                 'operation': 'perform_frame_download',
                                 'arguments': {
                                     'frames_batch_size': settings.DEFAULT_FRAMES_BATCH_SIZE,
-                                    'map': json.load(
-                                        file("../configs/custom_defaults/framelist_processing.json"))
+                                    'map': DEFAULT_PROCESSING['framelist']
                                 },
                             }
                         ]
@@ -226,8 +229,7 @@ def handle_uploaded_file(f, name, user=None, rate=None):
                                          'arguments': {
                                              'segments_batch_size': settings.DEFAULT_SEGMENTS_BATCH_SIZE,
                                              'rate': rate,
-                                             'map': json.load(
-                                                 file("../configs/custom_defaults/video_processing.json"))
+                                             'map': DEFAULT_PROCESSING['video']
                                          }
                                          }
                                     ]},
@@ -268,7 +270,9 @@ def create_annotation(form, object_name, labels, frame, user=None):
         annotation['metadata'] = json.loads(annotation['metadata'])
     else:
         annotation['metadata'] = None
-    annotation['frame_id'] = frame.pk
+    annotation['frame_index'] = frame.frame_index
+    annotation['segment_index'] = frame.segment_index
+    annotation['per_event_index'] = 0
     annotation['video_id'] = frame.video_id
     annotation['region_type'] = dvaapp.models.Region.ANNOTATION
     for lname in labels:
@@ -294,6 +298,7 @@ def create_query_from_request(p, request):
     """
     query_json = {'process_type': dvaapp.models.DVAPQL.QUERY}
     count = request.POST.get('count')
+    nprobe = request.POST.get('nprobe')
     generate_tags = request.POST.get('generate_tags')
     selected_indexers = json.loads(request.POST.get('selected_indexers', "[]"))
     selected_detectors = json.loads(request.POST.get('selected_detectors', "[]"))
@@ -302,7 +307,7 @@ def create_query_from_request(p, request):
     indexer_tasks = defaultdict(list)
     if generate_tags and generate_tags != 'false':
         query_json['map'].append({'operation': 'perform_analysis',
-                                  'arguments': {'analyzer': 'tagger', 'target': 'query', }
+                                  'arguments': {'trainedmodel_selector':{"name":"tagger"}, 'target': 'query', }
                                   })
 
     if selected_indexers:
@@ -313,12 +318,12 @@ def create_query_from_request(p, request):
         di = dvaapp.models.TrainedModel.objects.get(pk=i, model_type=dvaapp.models.TrainedModel.INDEXER)
         rtasks = []
         for r in indexer_tasks[i]:
-            rtasks.append({'operation': 'perform_retrieval', 'arguments': {'count': int(count), 'retriever_pk': r}})
+            rtasks.append({'operation': 'perform_retrieval', 'arguments': {'count': int(count),'nprobe':int(nprobe), 'retriever_selector': {"pk":r}}})
         query_json['map'].append(
             {
                 'operation': 'perform_indexing',
                 'arguments': {
-                    'index': di.name,
+                    'trainedmodel_selector': {"name": di.name},
                     'target': 'query',
                     'map': rtasks
                 }
@@ -330,41 +335,45 @@ def create_query_from_request(p, request):
             dd = dvaapp.models.TrainedModel.objects.get(pk=int(d), model_type=dvaapp.models.TrainedModel.DETECTOR)
             if dd.name == 'textbox':
                 query_json['map'].append({'operation': 'perform_detection',
-                                          'arguments': {'detector_pk': int(d),
+                                          'arguments': {'trainedmodel_selector':{'pk': int(d)},
                                                         'target': 'query',
                                                         'map': [{
                                                             'operation': 'perform_analysis',
                                                             'arguments': {'target': 'query_regions',
-                                                                          'analyzer': 'crnn',
+                                                                          'trainedmodel_selector': {'name':'crnn'},
                                                                           'filters': {'event_id': '__parent_event__'}
                                                                           }
                                                         }]
                                                         }
                                           })
             elif dd.name == 'face':
-                dr = dvaapp.models.Retriever.objects.get(name='facenet', algorithm=dvaapp.models.Retriever.EXACT)
+                if settings.ENABLE_FAISS:
+                    dr = dvaapp.models.Retriever.objects.get(name='facenet', algorithm=dvaapp.models.Retriever.FAISS)
+                else:
+                    dr = dvaapp.models.Retriever.objects.get(name='facenet', algorithm=dvaapp.models.Retriever.EXACT)
                 query_json['map'].append({'operation': 'perform_detection',
-                                          'arguments': {'detector_pk': int(d),
+                                          'arguments': {'trainedmodel_selector':{'pk': int(d)},
                                                         'target': 'query',
                                                         'map': [{
                                                             'operation': 'perform_indexing',
                                                             'arguments': {'target': 'query_regions',
-                                                                          'index': 'facenet',
+                                                                          'trainedmodel_selector': {'name': 'facenet'},
                                                                           'filters': {'event_id': '__parent_event__'},
                                                                           'map': [{
                                                                               'operation': 'perform_retrieval',
-                                                                              'arguments': {'retriever_pk': dr.pk,
+                                                                              'arguments': {'retriever_selector':{"pk":dr.pk},
                                                                                             'filters': {
                                                                                                 'event_id': '__parent_event__'},
                                                                                             'target': 'query_region_index_vectors',
-                                                                                            'count': 10}
+                                                                                            'count': int(count),
+                                                                                            'nprobe': int(nprobe),}
                                                                           }]}
                                                         }]
                                                         }
                                           })
             else:
                 query_json['map'].append({'operation': 'perform_detection',
-                                          'arguments': {'detector_pk': int(d), 'target': 'query', }})
+                                          'arguments': {'trainedmodel_selector': {'pk': int(d)}, 'target': 'query', }})
     user = request.user if request.user.is_authenticated else None
     p.create_from_json(query_json, user)
     return p.process
@@ -373,12 +382,12 @@ def create_query_from_request(p, request):
 def collect(p):
     context = {'results': defaultdict(list), 'regions': []}
     rids_to_names = {}
-    for rd in dvaapp.models.QueryRegion.objects.all().filter(query=p.process):
+    for rd in dvaapp.models.QueryRegion.objects.filter(query=p.process):
         rd_json = get_query_region_json(rd)
-        for r in dvaapp.models.QueryRegionResults.objects.filter(query=p.process, query_region=rd):
+        for r in dvaapp.models.QueryResult.objects.filter(query=p.process, query_region=rd):
             gather_results(r, rids_to_names, rd_json['results'])
         context['regions'].append(rd_json)
-    for r in dvaapp.models.QueryResults.objects.all().filter(query=p.process):
+    for r in dvaapp.models.QueryResult.objects.filter(query=p.process, query_region__isnull=True):
         gather_results(r, rids_to_names, context['results'])
     for k, v in context['results'].iteritems():
         if v:
@@ -398,33 +407,11 @@ def gather_results(r, rids_to_names, results):
 
 
 def get_url(r):
-    if r.detection_id:
-        dd = r.detection
-        frame_index = r.frame.frame_index
-        if dd.materialized:
-            return '{}{}/regions/{}.jpg'.format(settings.MEDIA_URL, r.video_id, r.detection_id)
-        else:
-            if settings.ENABLE_CLOUDFS:
-                cached_frame = fs.get_from_cache('/{}/frames/{}.jpg'.format(r.video_id, frame_index))
-                if cached_frame:
-                    if settings.DEBUG:
-                        logging.info("Cache used!")
-                    content = cStringIO.StringIO(cached_frame)
-                else:
-                    if settings.DEBUG:
-                        logging.info("Cache NOT used!")
-                    frame_url = '{}{}/frames/{}.jpg'.format(settings.MEDIA_URL, r.video_id, frame_index)
-                    response = requests.get(frame_url)
-                    content = cStringIO.StringIO(response.content)
-                img = Image.open(content)
-            else:
-                img = Image.open('{}/{}/frames/{}.jpg'.format(settings.MEDIA_ROOT, r.video_id, frame_index))
-            cropped = img.crop((dd.x, dd.y, dd.x + dd.w, dd.y + dd.h))
-            ibuffer = cStringIO.StringIO()
-            cropped.save(ibuffer, format="JPEG")
-            return "data:image/jpeg;base64, {}".format(base64.b64encode(ibuffer.getvalue()))
+    if r.region:
+        region_path = r.region.crop_and_get_region_path({},settings.MEDIA_ROOT)
+        return "data:image/jpeg;base64, {}".format(base64.b64encode(file(region_path).read()))
     else:
-        return '{}{}/frames/{}.jpg'.format(settings.MEDIA_URL, r.video_id, r.frame.frame_index)
+        return '{}{}/frames/{}.jpg'.format(settings.MEDIA_URL, r.video_id, r.frame_index)
 
 
 def get_sequence_name(i, r):
@@ -432,8 +419,8 @@ def get_sequence_name(i, r):
 
 
 def get_result_json(r):
-    return dict(url=get_url(r), result_type="Region" if r.detection_id else "Frame", rank=r.rank, frame_id=r.frame_id,
-                frame_index=r.frame.frame_index, distance=r.distance, video_id=r.video_id, video_name=r.video.name)
+    return dict(url=get_url(r), result_type="Region" if r.region_id else "Frame", rank=r.rank,
+                frame_index=r.frame_index, distance=r.distance, video_id=r.video_id, video_name=r.video.name)
 
 
 def get_query_region_json(rd):
@@ -444,12 +431,8 @@ def get_query_region_json(rd):
 
 def get_retrieval_event_name(r, rids_to_names):
     if r.retrieval_event_id not in rids_to_names:
-        retriever = dvaapp.models.Retriever.objects.get(pk=r.retrieval_event.arguments['retriever_pk'])
-        if 'index' in r.retrieval_event.parent.arguments:
-            indexer = dvaapp.models.TrainedModel.objects.get(name=r.retrieval_event.parent.arguments['index'],
-                                                             model_type=dvaapp.models.TrainedModel.INDEXER)
-        else:
-            indexer = dvaapp.models.TrainedModel.objects.get(pk=r.retrieval_event.parent.arguments['indexer_pk'])
+        retriever = dvaapp.models.Retriever.objects.get(**r.retrieval_event.arguments['retriever_selector'])
+        indexer = dvaapp.models.TrainedModel.objects.get(**r.retrieval_event.parent.arguments['trainedmodel_selector'])
         rids_to_names[r.retrieval_event_id] = get_sequence_name(indexer, retriever)
     return rids_to_names[r.retrieval_event_id]
 
@@ -462,7 +445,7 @@ def create_approximator_training_set(name, indexer_shasum, video_pks, user=None)
                 "MODEL": "TrainingSet",
                 "spec": {
                     "name": name,
-                    "training_task_type": dvaapp.models.TrainingSet.LOPQINDEX,
+                    "training_task_type": dvaapp.models.TrainingSet.TRAINAPPROX,
                     "instance_type": dvaapp.models.TrainingSet.INDEX,
                     "source_filters": {
                         "indexer_shasum": indexer_shasum,
@@ -493,6 +476,23 @@ def perform_training(training_set_pk, args, user=None):
             {
                 "operation": "perform_training",
                 "arguments": args
+            }
+        ]
+    }
+    p = DVAPQLProcess()
+    p.create_from_json(spec, user)
+    p.launch()
+    return p.process.pk
+
+
+def perform_model_export(model_pk, user=None):
+    spec = {
+        'process_type': dvaapp.models.DVAPQL.PROCESS,
+        'map': [
+
+            {
+                "operation": "perform_export",
+                "arguments": {'trainedmodel_selector':{"pk": model_pk}}
             }
         ]
     }

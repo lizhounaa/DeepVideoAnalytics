@@ -1,13 +1,15 @@
 from django.conf import settings
 import json
-from .models import Video, Frame, DVAPQL, QueryResults, TEvent, IndexEntries, Region, Tube, Segment, \
-    TubeRegionRelation, TubeRelation, Retriever, SystemState, QueryRegion, QueryRegionResults, \
-    TrainedModel, Worker, TrainingSet, RegionRelation, Export
+from .models import Video, Frame, DVAPQL, QueryResult, TEvent, IndexEntries, Region, Tube, Segment, \
+    TubeRegionRelation, TubeRelation, Retriever, SystemState, QueryRegion, \
+    TrainedModel, Worker, TrainingSet, RegionRelation, Export, HyperRegionRelation, HyperTubeRegionRelation, TaskRestart
 import serializers
 from rest_framework import viewsets
 from django.contrib.auth.models import User
 from rest_framework.permissions import IsAuthenticatedOrReadOnly, IsAuthenticated
+from rest_framework.response import Response
 from .processing import DVAPQLProcess
+from dva.in_memory import redis_client
 import logging
 
 try:
@@ -71,7 +73,7 @@ class FrameViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = (IsAuthenticatedOrReadOnly,) if settings.AUTH_DISABLED else (IsAuthenticated,)
     queryset = Frame.objects.all()
     serializer_class = serializers.FrameSerializer
-    filter_fields = ('frame_index', 'subdir', 'name', 'video')
+    filter_fields = ('frame_index', 'name', 'video')
 
 
 class SegmentViewSet(viewsets.ReadOnlyModelViewSet):
@@ -124,15 +126,8 @@ class DVAPQLViewSet(viewsets.ModelViewSet):
 
 class QueryResultsViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = (IsAuthenticatedOrReadOnly,) if settings.AUTH_DISABLED else (IsAuthenticated,)
-    queryset = QueryResults.objects.all()
+    queryset = QueryResult.objects.all()
     serializer_class = serializers.QueryResultsSerializer
-    filter_fields = ('query',)
-
-
-class QueryRegionResultsViewSet(viewsets.ReadOnlyModelViewSet):
-    permission_classes = (IsAuthenticatedOrReadOnly,) if settings.AUTH_DISABLED else (IsAuthenticated,)
-    queryset = QueryRegionResults.objects.all()
-    serializer_class = serializers.QueryRegionResultsSerializer
     filter_fields = ('query',)
 
 
@@ -141,6 +136,13 @@ class TEventViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = TEvent.objects.all()
     serializer_class = serializers.TEventSerializer
     filter_fields = ('video', 'operation', 'completed', 'started', 'errored', 'parent_process')
+
+
+class TaskRestartViewSet(viewsets.ReadOnlyModelViewSet):
+    permission_classes = (IsAuthenticatedOrReadOnly,) if settings.AUTH_DISABLED else (IsAuthenticated,)
+    queryset = TaskRestart.objects.all()
+    serializer_class = serializers.TaskRestartSerializer
+    filter_fields = ('process','video_uuid')
 
 
 class WorkerViewSet(viewsets.ReadOnlyModelViewSet):
@@ -153,7 +155,7 @@ class IndexEntriesViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = (IsAuthenticatedOrReadOnly,) if settings.AUTH_DISABLED else (IsAuthenticated,)
     queryset = IndexEntries.objects.all()
     serializer_class = serializers.IndexEntriesSerializer
-    filter_fields = ('video', 'algorithm', 'detection_name')
+    filter_fields = ('video', 'algorithm', 'target', 'indexer_shasum', 'approximator_shasum', 'approximate')
 
 
 class TubeViewSet(viewsets.ReadOnlyModelViewSet):
@@ -168,6 +170,18 @@ class RegionRelationViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = serializers.RegionRelationSerializer
 
 
+class HyperRegionRelationViewSet(viewsets.ReadOnlyModelViewSet):
+    permission_classes = (IsAuthenticatedOrReadOnly,) if settings.AUTH_DISABLED else (IsAuthenticated,)
+    queryset = HyperRegionRelation.objects.all()
+    serializer_class = serializers.HyperRegionRelationSerializer
+
+
+class HyperTubeRegionRelationViewSet(viewsets.ReadOnlyModelViewSet):
+    permission_classes = (IsAuthenticatedOrReadOnly,) if settings.AUTH_DISABLED else (IsAuthenticated,)
+    queryset = HyperTubeRegionRelation.objects.all()
+    serializer_class = serializers.HyperTubeRegionRelationSerializer
+
+
 class TubeRelationViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = (IsAuthenticatedOrReadOnly,) if settings.AUTH_DISABLED else (IsAuthenticated,)
     queryset = TubeRelation.objects.all()
@@ -178,3 +192,17 @@ class TubeRegionRelationViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = (IsAuthenticatedOrReadOnly,) if settings.AUTH_DISABLED else (IsAuthenticated,)
     queryset = TubeRegionRelation.objects.all()
     serializer_class = serializers.TubeRegionRelationSerializer
+
+
+class RetrieverStateViewState(viewsets.ViewSet):
+    permission_classes = (IsAuthenticatedOrReadOnly,) if settings.AUTH_DISABLED else (IsAuthenticated,)
+
+    def list(self, request, format=None):
+        """
+        Returns state of the retriever
+        """
+        retriever_state = redis_client.hgetall("retriever_state")
+        if retriever_state:
+            return Response({k:json.loads(v) for k,v in retriever_state.items()})
+        else:
+            return Response({})

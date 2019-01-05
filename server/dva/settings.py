@@ -26,19 +26,16 @@ SECRET_KEY = os.environ['SECRET_KEY']
 AUTH_DISABLED = os.environ.get('AUTH_DISABLED', False)
 
 INTERNAL_IPS = ['localhost','127.0.0.1']
+CSRF_COOKIE_NAME = 'dvacsrftoken'
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = 'ENABLE_DEBUG' in os.environ
 
 if 'ALLOWED_HOSTS' in os.environ:
     ALLOWED_HOSTS = [k.strip() for k in os.environ['ALLOWED_HOSTS'].split(',') if k.strip()]
-    # SESSION_COOKIE_SECURE = True
-    # CSRF_COOKIE_SECURE = True
-    # SECURE_SSL_REDIRECT = True
-    # SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https') # Confirm this cannot be spoofed
-    # SECURE_REDIRECT_EXEMPT = [r'^vdn/.']
 else:
     ALLOWED_HOSTS = ["*"]  # Dont use this in prod
+    CSRF_TRUSTED_ORIGINS = [".appspot.com"]
 
 #: Only add pickle to this list if your broker is secured
 #: from unwanted access (see userguide/security.html)
@@ -232,6 +229,7 @@ GLOBAL_MODEL_QUEUE_ENABLED = os.environ.get('GLOBAL_MODEL',False)
 GLOBAL_RETRIEVER_QUEUE_ENABLED = False if os.environ.get('DISABLE_GLOBAL_RETRIEVER',False) else True
 
 Q_MANAGER = 'qmanager'
+Q_REFRESHER = 'qrefresher'
 Q_REDUCER = 'qreducer'
 Q_EXTRACTOR = 'qextract'
 Q_STREAMER = 'qstreamer'
@@ -257,32 +255,18 @@ TASK_NAMES_TO_QUEUE = {
     "perform_sync":Q_EXTRACTOR,
     "perform_import":Q_EXTRACTOR,
     "perform_stream_capture": Q_STREAMER,
+    "perform_matching": Q_TRAINER,
     "perform_training": Q_TRAINER,
     "perform_reduce": Q_REDUCER,
     "perform_video_decode_lambda": Q_LAMBDA
 }
 
-
-RESTARTABLE_TASKS = {
-    'perform_indexing':{
-        'delete_models':['IndexEntries',],
-    },
-    'perform_detection':{
-        'delete_models':['Region',]
-    },
-    'perform_analysis':{
-        'delete_models':['Region',]
-    },
-    'perform_frame_download':{
-        'delete_models':['Region','Frame']
-    },
-    'perform_video_decode':{
-        'delete_models':['Frame',]
-    },
-}
-
+RESTARTABLE_TASKS = {'perform_video_segmentation', 'perform_indexing', 'perform_detection', 'perform_analysis',
+                     'perform_frame_download', 'perform_video_decode', 'perform_test'}
 
 NON_PROCESSING_TASKS = {'perform_training','perform_training_set_creation','perform_deletion', 'perform_export'}
+
+TRAINING_TASKS = {'perform_training','perform_training_set_creation'}
 
 # Is the code running on kubernetes?
 KUBE_MODE = 'KUBE_MODE' in os.environ
@@ -295,5 +279,7 @@ DEFAULT_RATE = int(os.environ.get('DEFAULT_RATE',30))
 # Max task attempts
 MAX_TASK_ATTEMPTS = 5
 # FAISS
-ENABLE_FAISS = 'ENABLE_FAISS' in os.environ
+ENABLE_FAISS = 'DISABLE_FAISS' not in os.environ
+# Serializer version
+SERIALIZER_VERSION = "0.1"
 

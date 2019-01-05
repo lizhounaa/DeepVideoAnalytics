@@ -11,35 +11,10 @@ except ImportError:
     np = None
     logging.warning("Could not import indexer / clustering assuming running in front-end mode")
 from django.apps import apps
-from models import Video, DVAPQL, TEvent, TrainedModel, Retriever, Worker, DeletedVideo
+from models import Video, DVAPQL, TEvent, TrainedModel, Retriever, Worker, DeletedVideo, TrainingSet
 from celery.result import AsyncResult
 import fs
-import task_shared
 
-SYNC_TASKS = {
-    "perform_dataset_extraction": [{'operation': 'perform_sync', 'arguments': {'dirname': 'frames'}}, ],
-    "perform_video_segmentation": [{'operation': 'perform_sync', 'arguments': {'dirname': 'segments'}}, ],
-    "perform_video_decode": [{'operation': 'perform_sync', 'arguments': {'dirname': 'frames'}}, ],
-    "perform_frame_download": [{'operation': 'perform_sync', 'arguments': {'dirname': 'frames'}}, ],
-    'perform_detection': [],
-    'perform_region_import': [],
-    'perform_transformation': [{'operation': 'perform_sync', 'arguments': {'dirname': 'regions'}}, ],
-    'perform_indexing': [{'operation': 'perform_sync', 'arguments': {'dirname': 'indexes'}}, ],
-    'perform_index_approximation': [{'operation': 'perform_sync', 'arguments': {'dirname': 'indexes'}}, ],
-    'perform_import': [{'operation': 'perform_sync', 'arguments': {}}, ],
-    'perform_training': [],
-    'perform_stream_capture': [],
-    'perform_reduce': [],
-    'perform_test': [],
-    'perform_detector_import': [],
-}
-
-ANALYER_NAME_TO_PK = {}
-APPROXIMATOR_NAME_TO_PK = {}
-INDEXER_NAME_TO_PK = {}
-APPROXIMATOR_SHASUM_TO_PK = {}
-RETRIEVER_NAME_TO_PK = {}
-DETECTOR_NAME_TO_PK = {}
 CURRENT_QUEUES = set()
 LAST_UPDATED = None
 
@@ -59,96 +34,21 @@ def get_queues():
 
 def get_model_specific_queue_name(operation, args):
     """
-    TODO simplify this mess by using model_selector
     :param operation:
     :param args:
     :return:
     """
-    if 'detector_pk' in args:
-        queue_name = "q_detector_{}".format(args['detector_pk'])
-    elif 'indexer_pk' in args:
-        queue_name = "q_indexer_{}".format(args['indexer_pk'])
-    elif 'retriever_pk' in args:
-        queue_name = "q_retriever_{}".format(args['retriever_pk'])
-    elif 'analyzer_pk' in args:
-        queue_name = "q_analyzer_{}".format(args['analyzer_pk'])
-    elif 'approximator_pk' in args:
-        queue_name = "q_approximator_{}".format(args['approximator_pk'])
-    elif 'retriever' in args:
-        if args['retriever'] not in RETRIEVER_NAME_TO_PK:
-            RETRIEVER_NAME_TO_PK[args['retriever']] = Retriever.objects.get(name=args['retriever']).pk
-        queue_name = 'q_retriever_{}'.format(RETRIEVER_NAME_TO_PK[args['retriever']])
-    elif 'index' in args:
-        if args['index'] not in INDEXER_NAME_TO_PK:
-            INDEXER_NAME_TO_PK[args['index']] = TrainedModel.objects.get(name=args['index'],
-                                                                         model_type=TrainedModel.INDEXER).pk
-        queue_name = 'q_indexer_{}'.format(INDEXER_NAME_TO_PK[args['index']])
-    elif 'approximator_shasum' in args:
-        ashasum = args['approximator_shasum']
-        if ashasum not in APPROXIMATOR_SHASUM_TO_PK:
-            APPROXIMATOR_SHASUM_TO_PK[ashasum] = TrainedModel.objects.get(shasum=ashasum,
-                                                                          model_type=TrainedModel.APPROXIMATOR).pk
-        queue_name = 'q_approximator_{}'.format(APPROXIMATOR_SHASUM_TO_PK[ashasum])
-    elif 'approximator' in args:
-        ashasum = args['approximator']
-        if args['approximator'] not in APPROXIMATOR_NAME_TO_PK:
-            APPROXIMATOR_NAME_TO_PK[ashasum] = TrainedModel.objects.get(name=args['approximator'],
-                                                                        model_type=TrainedModel.APPROXIMATOR).pk
-        queue_name = 'q_approximator_{}'.format(APPROXIMATOR_NAME_TO_PK[args['approximator']])
-    elif 'analyzer' in args:
-        if args['analyzer'] not in ANALYER_NAME_TO_PK:
-            ANALYER_NAME_TO_PK[args['analyzer']] = TrainedModel.objects.get(name=args['analyzer'],
-                                                                            model_type=TrainedModel.ANALYZER).pk
-        queue_name = 'q_analyzer_{}'.format(ANALYER_NAME_TO_PK[args['analyzer']])
-    elif 'detector' in args:
-        if args['detector'] not in DETECTOR_NAME_TO_PK:
-            DETECTOR_NAME_TO_PK[args['detector']] = TrainedModel.objects.get(name=args['detector'],
-                                                                             model_type=TrainedModel.DETECTOR).pk
-        queue_name = 'q_detector_{}'.format(DETECTOR_NAME_TO_PK[args['detector']])
+    if 'trainedmodel_selector' in args:
+        return 'q_model_{}'.format(TrainedModel.objects.filter(**args['trainedmodel_selector']).first().pk)
+    elif 'retriever_selector' in args:
+        return 'q_retriever_{}'.format(Retriever.objects.filter(**args['retriever_selector']).first().pk)
     else:
-        raise NotImplementedError, "{}, {}".format(operation, args)
-    return queue_name
-
-
-def get_model_pk_from_args(operation, args):
-    if 'detector_pk' in args:
-        return args['detector_pk']
-    if 'approximator_pk' in args:
-        return args['approximator_pk']
-    elif 'indexer_pk' in args:
-        return args['indexer_pk']
-    elif 'retriever_pk' in args:
-        return args['retriever_pk']
-    elif 'analyzer_pk' in args:
-        return ['analyzer_pk']
-    elif 'index' in args:
-        if args['index'] not in INDEXER_NAME_TO_PK:
-            INDEXER_NAME_TO_PK[args['index']] = TrainedModel.objects.get(name=args['index'],
-                                                                         model_type=TrainedModel.INDEXER).pk
-        return INDEXER_NAME_TO_PK[args['index']]
-    elif 'analyzer' in args:
-        if args['analyzer'] not in ANALYER_NAME_TO_PK:
-            ANALYER_NAME_TO_PK[args['analyzer']] = TrainedModel.objects.get(name=args['analyzer'],
-                                                                            model_type=TrainedModel.ANALYZER).pk
-        return ANALYER_NAME_TO_PK[args['analyzer']]
-    elif 'detector' in args:
-        if args['detector'] not in DETECTOR_NAME_TO_PK:
-            DETECTOR_NAME_TO_PK[args['detector']] = TrainedModel.objects.get(name=args['detector'],
-                                                                             model_type=TrainedModel.DETECTOR).pk
-        return DETECTOR_NAME_TO_PK[args['detector']]
-    elif 'approximator_shasum' in args:
-        ashasum = args['approximator_shasum']
-        if ashasum not in APPROXIMATOR_SHASUM_TO_PK:
-            APPROXIMATOR_SHASUM_TO_PK[ashasum] = TrainedModel.objects.get(shasum=ashasum,
-                                                                          model_type=TrainedModel.APPROXIMATOR).pk
-        return APPROXIMATOR_SHASUM_TO_PK[ashasum]
-    else:
-        raise NotImplementedError, "{}, {}".format(operation, args)
+        raise NotImplementedError("{}, {}".format(operation, args))
 
 
 def get_queue_name_and_operation(operation, args):
     global CURRENT_QUEUES
-    if operation == 'perform_test':
+    if 'queue' in args:
         return args['queue'], operation
     elif operation in settings.TASK_NAMES_TO_QUEUE:
         # Here we return directly since queue name is not per model
@@ -252,16 +152,26 @@ def launch_tasks(k, dt, inject_filters, map_filters=None, launch_type=""):
         if op in settings.NON_PROCESSING_TASKS:
             video_per_task = None
         else:
-            if "video_selector" in k:
-                video_per_task = Video.objects.get(**k['video_selector'])
+            if "video_selector" in k['arguments']:
+                video_per_task = Video.objects.get(**k['arguments']['video_selector'])
             else:
                 video_per_task = v
+        if op in settings.TRAINING_TASKS:
+            if "training_set_id" in k:
+                training_set = TrainingSet.objects.get(pk=k['training_set_id'])
+            elif "trainingset_selector" in k['arguments']:
+                training_set = TrainingSet.objects.get(**k['arguments']['trainingset_selector'])
+            else:
+                training_set = dt.training_set
+        else:
+            training_set = None
         if op == 'perform_sync':
             task_group_id = k.get('task_group_id', -1)
         else:
             task_group_id = k['task_group_id']
         next_task = TEvent.objects.create(video=video_per_task, operation=op, arguments=args, parent=dt,
-                                          task_group_id=task_group_id, parent_process=p, queue=q)
+                                          task_group_id=task_group_id, parent_process=p, queue=q,
+                                          training_set=training_set)
         tids.append(app.send_task(k['operation'], args=[next_task.pk, ], queue=q).id)
     return tids
 
@@ -269,18 +179,15 @@ def launch_tasks(k, dt, inject_filters, map_filters=None, launch_type=""):
 def process_next(dt, inject_filters=None, custom_next_tasks=None, sync=True, launch_next=True, map_filters=None):
     if custom_next_tasks is None:
         custom_next_tasks = []
-    task_id = dt.pk
     launched = []
     args = copy.deepcopy(dt.arguments)
     logging.info("next tasks for {}".format(dt.operation))
     next_tasks = args.get('map', []) if args and launch_next else []
     if sync and settings.MEDIA_BUCKET:
-        for k in SYNC_TASKS.get(dt.operation, []):
-            if settings.ENABLE_CLOUDFS:
-                dirname = k['arguments'].get('dirname', None)
-                task_shared.upload(dirname, task_id, dt.video_id)
-            else:
-                launched += launch_tasks(k, dt, inject_filters, None, 'sync')
+        if settings.ENABLE_CLOUDFS:
+            dt.upload()
+        else:
+            launched += launch_tasks(dt, inject_filters, None, 'sync')
     for k in next_tasks + custom_next_tasks:
         if map_filters is None:
             map_filters = get_map_filters(k, dt.video)
@@ -292,13 +199,6 @@ def process_next(dt, inject_filters=None, custom_next_tasks=None, sync=True, lau
                                           parent_process_id=dt.parent_process_id, queue=settings.Q_REDUCER)
         launched.append(app.send_task(next_task.operation, args=[next_task.pk, ], queue=settings.Q_REDUCER).id)
     return launched
-
-
-def mark_as_completed(start):
-    start.completed = True
-    if start.start_ts:
-        start.duration = (timezone.now() - start.start_ts).total_seconds()
-    start.save()
 
 
 class DVAPQLProcess(object):
@@ -372,6 +272,7 @@ class DVAPQLProcess(object):
     def launch(self):
         if self.process.script['process_type'] == DVAPQL.PROCESS:
             self.delete_instances()
+            self.create_root_task()
             self.create_instances()
             self.launch_processing_tasks()
             self.launch_process_monitor()
@@ -396,32 +297,50 @@ class DVAPQLProcess(object):
                 self.process.error_message = "Cannot delete {}; Only video deletion implemented.".format(d['MODEL'])
 
     def create_instances(self):
+        video_id_to_event = {}
         for c in self.process.script.get('create', []):
             c_copy = copy.deepcopy(c)
             m = apps.get_model(app_label='dvaapp', model_name=c['MODEL'])
             for k, v in c['spec'].iteritems():
                 if v == '__timezone.now__':
                     c_copy['spec'][k] = timezone.now()
+            if c['MODEL'] != 'Video' and c['MODEL'] != 'TrainingSet':
+                if 'video_id' in c_copy['spec']:
+                    vid = c_copy['spec']['video_id']
+                    if vid not in video_id_to_event:
+                        # if spec includes video_id then the same video_id must be associated with the event
+                        video_id_to_event[vid] = TEvent.objects.create(operation="perform_create",
+                                                                       task_group_id=self.task_group_index,
+                                                                       completed=False, started=True,
+                                                                       parent=self.root_task, video_id=vid,
+                                                                       start_ts=timezone.now(),
+                                                                       parent_process_id=self.process.pk, queue="sync")
+                        self.task_group_index += 1
+                    c_copy['spec']['event_id'] = video_id_to_event[vid].pk
+                else:
+                    c_copy['spec']['event_id'] = self.root_task.pk
             instance = m.objects.create(**c_copy['spec'])
             self.created_objects.append(instance)
+        for dt in video_id_to_event.values():
+            dt.mark_as_completed()
 
     def create_root_task(self):
         self.root_task = TEvent.objects.create(operation="perform_launch", task_group_id=self.task_group_index,
-                                               completed=True, started=True,
+                                               completed=True, started=True, start_ts=timezone.now(), duration=0,
                                                parent_process_id=self.process.pk, queue="sync")
         self.task_group_index += 1
 
     def launch_processing_tasks(self):
-        self.create_root_task()
         self.assign_task_group_id(self.process.script.get('map', []), 0)
         for t in self.process.script.get('map', []):
             self.launch_task(t)
         self.assign_task_group_id(self.process.script.get('reduce', []), 0)
         for t in self.process.script.get('reduce', []):
-            if t['operation'] != 'perform_reduce':
+            if 'operation' not in t:
+                t['operation'] = 'perform_reduce'
                 self.launch_task(t)
             else:
-                raise ValueError('{} is not a valid reduce operation, only "perform_reduce" is valid'.format(
+                raise ValueError('{} is not a valid reduce operation, reduce tasks should not have an operation'.format(
                     t['operation']))
 
     def launch_query_tasks(self):
@@ -442,14 +361,17 @@ class DVAPQLProcess(object):
         app.send_task(name=monitoring_task.operation, args=[monitoring_task.pk, ],
                       queue=monitoring_task.queue)
 
-    def wait(self, timeout=60):
+    def wait_query(self, timeout=60):
+        if self.process.process_type != DVAPQL.QUERY:
+            raise ValueError("wait query is only supported by Query processes")
         for _, result in self.task_results.iteritems():
             try:
                 next_task_ids = result.get(timeout=timeout)
-                if next_task_ids:
-                    for next_task_id in next_task_ids:
-                        next_result = AsyncResult(id=next_task_id)
-                        _ = next_result.get(timeout=timeout)
+                while next_task_ids:
+                    if type(next_task_ids) is list:
+                        for next_task_id in next_task_ids:
+                            next_result = AsyncResult(id=next_task_id)
+                            next_task_ids = next_result.get(timeout=timeout)
             except Exception, e:
                 raise ValueError(e)
 
@@ -460,12 +382,18 @@ class DVAPQLProcess(object):
         for k, v in t.get('arguments', {}).iteritems():
             if (type(v) is str or type(v) is unicode) and v.startswith('__created__'):
                 t['arguments'][k] = self.get_created_object_pk(v)
-        if 'video_id' in t:
-            if (type(t['video_id']) is str or type(t['video_id']) is unicode) and t['video_id'].startswith(
-                    '__created__'):
+        dv = None
+        if t['operation'] in settings.NON_PROCESSING_TASKS:
+            dv = None
+        elif 'video_id' in t:
+            if t['video_id'].startswith('__created__'):
                 t['video_id'] = self.get_created_object_pk(t['video_id'])
-            v = Video.objects.get(pk=t['video_id'])
-            map_filters = get_map_filters(t, v)
+            dv = Video.objects.get(pk=t['video_id'])
+        elif 'video_selector' in t['arguments']:
+            dv = Video.objects.get(**t['arguments']['video_selector'])
+            t['video_id'] = dv.pk
+        if dv:
+            map_filters = get_map_filters(t, dv)
         else:
             map_filters = [{}]
         # This is useful in case of perform_stream_capture where batch size is used but number of segments is unknown
@@ -484,6 +412,10 @@ class DVAPQLProcess(object):
             dt.parent = self.root_task
             if 'video_id' in t:
                 dt.video_id = t['video_id']
+            if 'training_set_id' in t:
+                dt.training_set_id = t['training_set_id']
+            elif 'trainingset_selector' in t['arguments']:
+                dt.training_set_id = TrainingSet.objects.get(**t['arguments']['trainingset_selector'])
             dt.arguments = args
             dt.queue, op = get_queue_name_and_operation(t['operation'], t.get('arguments', {}))
             dt.operation = op

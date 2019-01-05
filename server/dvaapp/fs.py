@@ -13,15 +13,21 @@ from dva.in_memory import redis_client
 try:
     from google.cloud import storage
 except:
+    logging.exception("Could not import gcloud storage client")
     pass
 try:
     S3 = boto3.resource('s3')
 except:
+    logging.exception("Could not initialize S3")
     pass
 try:
     GS = storage.Client()
 except:
+    # suppress the exception unless GCloud support is really required.
+    if settings.MEDIA_BUCKET and settings.CLOUD_FS_PREFIX == 'gs':
+        logging.exception("Could not initialize GS client")
     pass
+
 if settings.MEDIA_BUCKET and settings.CLOUD_FS_PREFIX == 's3':
     S3_MODE = True
     GS_MODE = False
@@ -42,19 +48,27 @@ if 'DO_ACCESS_KEY_ID' in os.environ and 'DO_SECRET_ACCESS_KEY' and os.environ:
                                       os.environ.get('DO_REGION', 'nyc3')),
                                   aws_access_key_id=os.environ['DO_ACCESS_KEY_ID'],
                                   aws_secret_access_key=os.environ['DO_SECRET_ACCESS_KEY'])
+    do_resource = do_session.resource('s3', region_name=os.environ.get('DO_REGION', 'nyc3'),
+                                  endpoint_url='https://{}.digitaloceanspaces.com'.format(
+                                      os.environ.get('DO_REGION', 'nyc3')),
+                                  aws_access_key_id=os.environ['DO_ACCESS_KEY_ID'],
+                                  aws_secret_access_key=os.environ['DO_SECRET_ACCESS_KEY'])
 
 
 def cacheable(path):
-    return path.startswith('/queries/') or '/segments/' in path \
+    return path.startswith('/queries/') or '/segments/' in path or '/regions/' in path \
            or ('/frames/' in path and (path.endswith('.jpg') or path.endswith('.png')))
 
 
-def cache_path(path, expire_in_seconds=600):
+def cache_path(path, payload=None, expire_in_seconds=600):
     if not path.startswith('/'):
         path = "/{}".format(path)
     if cacheable(path):
-        with open('{}{}'.format(settings.MEDIA_ROOT, path), 'rb') as body:
-            redis_client.set(path, body.read(), ex=expire_in_seconds, nx=True)
+        if payload is None:
+            with open('{}{}'.format(settings.MEDIA_ROOT, path), 'rb') as body:
+                redis_client.set(path, body.read(), ex=expire_in_seconds, nx=True)
+        else:
+            redis_client.set(path, payload, ex=expire_in_seconds, nx=True)
         return True
     else:
         return False
@@ -80,8 +94,11 @@ def get_from_remote_fs(src, path, dlpath, original_path, safe):
         except:
             raise ValueError("{} to {}".format(path, dlpath))
     else:
-        with open(dlpath, 'w') as fout:
-            BUCKET.get_blob(src).download_to_file(fout)
+        try:
+            with open(dlpath, 'w') as fout:
+                BUCKET.get_blob(src).download_to_file(fout)
+        except:
+            raise ValueError("{} to {}".format(src, dlpath))
     if safe:
         os.rename(dlpath, original_path)
     # checks and puts the object back in cache
@@ -191,7 +208,7 @@ def get_path_to_file(path, local_path):
                     f.write(chunk)
         r.close()
     elif path.endswith('/'):
-        raise NotImplementedError("Importing directories disabled {}".format(path))
+        raise ValueError("Cannot import directories {}".format(path))
     elif path.startswith('s3'):
         bucket_name = path[5:].split('/')[0]
         key = '/'.join(path[5:].split('/')[1:])
@@ -208,26 +225,34 @@ def get_path_to_file(path, local_path):
         key = '/'.join(path[5:].split('/')[1:])
         do_client.download_file(bucket_name, key, local_path)
     else:
-        raise NotImplementedError("Unknown file system {}".format(path))
+        raise ValueError("Unknown file system {}".format(path))
 
 
-def upload_file_to_path(local_path, remote_path):
+def upload_file_to_path(local_path, remote_path, make_public=False):
     fs_type = remote_path[:2]
     bucket_name = remote_path[5:].split('/')[0]
     key = '/'.join(remote_path[5:].split('/')[1:])
     if remote_path.endswith('/'):
-        raise NotImplementedError("key/remote-path cannot end in a /")
+        raise ValueError("key/remote-path cannot end in a /")
     elif fs_type == 's3':
         with open(local_path, 'rb') as body:
             S3.Object(bucket_name, key).put(Body=body)
+        if make_public:
+            object_acl = S3.ObjectAcl(bucket_name, key)
+            object_acl.put(ACL='public-read')
     elif fs_type == 'gs':
         remote_bucket = GS.get_bucket(bucket_name)
-        with open(local_path, 'w') as flocal:
-            remote_bucket.get_blob(key).upload_from_file(flocal)
+        blob = remote_bucket.blob(key.strip('/'))
+        blob.upload_from_filename(local_path)
+        if make_public:
+            blob.make_public()
     elif fs_type == 'do':
         do_client.upload_file(local_path, bucket_name, key)
+        if make_public:
+            object_acl = do_resource.ObjectAcl(bucket_name, key)
+            object_acl.put(ACL='public-read')
     else:
-        raise NotImplementedError("Unknown cloud file system {}".format(remote_path))
+        raise ValueError("Unknown cloud file system : '{}'".format(remote_path))
 
 
 def upload_file_to_remote(fpath, cache=True):
@@ -242,7 +267,7 @@ def upload_file_to_remote(fpath, cache=True):
 
 
 def download_video_from_remote_to_local(dv):
-    logging.info("Syncing entire directory for {}".format(dv.pk))
+    logging.info("Download entire directory from remote fs for {}".format(dv.pk))
     if S3_MODE:
         dest = '{}/{}/'.format(settings.MEDIA_ROOT, dv.pk)
         src = 's3://{}/{}/'.format(settings.MEDIA_BUCKET, dv.pk)
@@ -256,11 +281,20 @@ def download_video_from_remote_to_local(dv):
         if syncer.returncode != 0:
             raise ValueError("Error while executing : {}".format(command))
     else:
-        raise NotImplementedError
+        dv.create_directory()
+        for blob in BUCKET.list_blobs(prefix='{}/'.format(dv.pk)):
+            dirname = os.path.dirname("{}/{}".format(settings.MEDIA_ROOT,blob.name))
+            if 'events' in dirname and not os.path.isdir(dirname):
+                try:
+                    os.mkdir(dirname)
+                except:
+                    pass
+            with open("{}/{}".format(settings.MEDIA_ROOT,blob.name), 'w') as fout:
+                blob.download_to_file(fout)
 
 
 def upload_video_to_remote(video_id):
-    logging.info("Syncing entire directory for {}".format(video_id))
+    logging.info("Uploading entire directory to remote fs for {}".format(video_id))
     src = '{}/{}/'.format(settings.MEDIA_ROOT, video_id)
     if S3_MODE:
         dest = 's3://{}/{}/'.format(settings.MEDIA_BUCKET, video_id)
@@ -274,6 +308,7 @@ def upload_video_to_remote(video_id):
         for root, directories, filenames in os.walk(src):
             for filename in filenames:
                 path = os.path.join(root, filename)
+                logging.info("uploading {} with gcs version {}".format(path,storage.__version__))
                 upload_file_to_remote(path[root_length:], cache=False)
     else:
         raise ValueError

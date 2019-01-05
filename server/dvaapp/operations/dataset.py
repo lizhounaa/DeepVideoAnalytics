@@ -55,8 +55,6 @@ class DatasetCreator(object):
                             df.name = os.path.join(subdir[root_length:], ofname)
                             if not df.name.startswith('/'):
                                 df.name = "/{}".format(df.name)
-                            s = "/{}/".format(subdir[root_length:]).replace('//','/')
-                            df.subdir = s
                             df_list.append(df)
 
                     else:
@@ -65,17 +63,20 @@ class DatasetCreator(object):
                 logging.warning("skipping {} ".format(subdir))
         self.dvideo.frames = len(df_list)
         self.dvideo.save()
-        df_ids = Frame.objects.bulk_create(df_list,batch_size=1000)
         regions = []
+        per_event_region_index = 0
         for i,f in enumerate(df_list):
             if f.name:
                 a = Region()
                 a.video_id = self.dvideo.pk
-                a.frame_id = df_ids[i].id
                 a.frame_index = f.frame_index
-                a.metadata = {'labels':list({ l.strip() for l in f.subdir.split('/')[1:] if l.strip() })}
+                a.per_event_index = per_event_region_index
+                per_event_region_index += 1
+                if '/' in f.name:
+                    a.metadata = {'labels':list({ l.strip() for l in f.name.split('/')[1:] if l.strip() })}
+                    a.text = f.name.split('/')
                 a.region_type = a.ANNOTATION
                 a.object_name = 'directory_labels'
                 a.event_id = event.pk
                 regions.append(a)
-        Region.objects.bulk_create(regions, batch_size=1000)
+        event.finalize({"Region":regions, "Frame":df_list})
